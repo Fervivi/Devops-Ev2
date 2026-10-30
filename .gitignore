@@ -1,0 +1,18 @@
+# Maven
+backend/target/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Entorno / secretos
+.env
+*.pem
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

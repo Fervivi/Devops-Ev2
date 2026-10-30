@@ -1,0 +1,358 @@
+name: MiniBiblioteca DevSecOps CI-CD
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: minibiblioteca-production
+  cancel-in-progress: true
+
+jobs:
+  # ==========================================================
+  # CI 0 - SNYK / SOFTWARE COMPOSITION ANALYSIS
+  # ==========================================================
+  seguridad_snyk:
+    name: 1. Snyk - Dependencias
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+
+      - name: Instalar Snyk CLI
+        run: npm install -g snyk
+
+      - name: Preparar dependencias Maven
+        run: mvn -B -f backend/pom.xml -DskipTests dependency:go-offline
+
+      - name: Analizar dependencias
+        id: snyk_scan
+        shell: bash
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set +e
+
+          snyk test \
+            --file=backend/pom.xml \
+            --package-manager=maven \
+            --severity-threshold=critical \
+            --json-file-output=snyk-report.json
+
+          SNYK_EXIT_CODE=$?
+          echo "exit_code=$SNYK_EXIT_CODE" >> "$GITHUB_OUTPUT"
+          set -e
+
+          if [ "$SNYK_EXIT_CODE" -eq 0 ]; then
+            echo "Snyk: sin vulnerabilidades Critical."
+            exit 0
+          fi
+
+          if [ "$SNYK_EXIT_CODE" -eq 1 ]; then
+            echo "Snyk: se detectó al menos una vulnerabilidad Critical."
+            exit 0
+          fi
+
+          echo "Snyk terminó con un error técnico: $SNYK_EXIT_CODE"
+          exit "$SNYK_EXIT_CODE"
+
+      - name: Publicar reporte Snyk
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-report
+          path: snyk-report.json
+          if-no-files-found: warn
+
+      - name: Aplicar Security Gate Critical
+        if: steps.snyk_scan.outputs.exit_code == '1'
+        run: |
+          echo "SECURITY GATE BLOQUEADO: vulnerabilidad Critical."
+          exit 1
+
+  # ==========================================================
+  # CI 1 - JUNIT + MOCKITO + JACOCO
+  # ==========================================================
+  pruebas:
+    name: 2. JUnit Mockito y JaCoCo
+    needs: seguridad_snyk
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+
+      - name: Ejecutar pruebas y generar cobertura
+        run: mvn -B -f backend/pom.xml clean verify
+
+      - name: Publicar reporte JaCoCo
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-backend
+          path: backend/target/site/jacoco/
+          if-no-files-found: error
+
+  # ==========================================================
+  # CI 2 - SONARQUBE CLOUD / QUALITY GATE
+  # ==========================================================
+  sonarcloud:
+    name: 3. SonarQube Cloud
+    needs: pruebas
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+
+      - name: Descargar reporte JaCoCo
+        uses: actions/download-artifact@v4
+        with:
+          name: jacoco-backend
+          path: backend/target/site/jacoco/
+
+      - name: Compilar clases para el análisis
+        run: mvn -B -f backend/pom.xml -DskipTests package
+
+      - name: Validar configuración SonarQube Cloud
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          test -n "$SONAR_TOKEN" || { echo "Falta SONAR_TOKEN"; exit 1; }
+          test -n "$SONAR_PROJECT_KEY" || { echo "Falta SONAR_PROJECT_KEY"; exit 1; }
+          test -n "$SONAR_ORGANIZATION" || { echo "Falta SONAR_ORGANIZATION"; exit 1; }
+
+      - name: Ejecutar SonarQube Cloud y esperar Quality Gate
+        working-directory: backend
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          mvn -B \
+            org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+            -Dsonar.projectName="MiniBiblioteca DevSecOps" \
+            -Dsonar.organization="$SONAR_ORGANIZATION" \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+            -Dsonar.qualitygate.wait=true
+
+  # ==========================================================
+  # CI 3 - BUILD DE IMÁGENES Y SMOKE TEST
+  # El trabajo pesado se hace en GitHub, NO en EC2.
+  # ==========================================================
+  docker:
+    name: 4. Docker Compose y Smoke Test
+    needs: sonarcloud
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Validar Docker Compose
+        run: APP_VERSION="$GITHUB_SHA" APP_PORT=18080 docker compose config
+
+      - name: Construir imágenes en GitHub Actions
+        run: APP_VERSION="$GITHUB_SHA" docker compose build
+
+      - name: Levantar stack temporal
+        run: APP_VERSION="$GITHUB_SHA" APP_PORT=18080 docker compose up -d --no-build
+
+      - name: Esperar y probar aplicación
+        shell: bash
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:18080/api/health >/dev/null 2>&1; then
+              curl -fsS http://127.0.0.1:18080/api/libros
+              echo "Smoke test correcto."
+              exit 0
+            fi
+            echo "Esperando aplicación... intento $i/30"
+            sleep 5
+          done
+          echo "La aplicación no respondió."
+          exit 1
+
+      - name: Mostrar logs si falla el smoke test
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --tail=120
+
+      - name: Detener stack temporal
+        if: always()
+        run: APP_VERSION="$GITHUB_SHA" APP_PORT=18080 docker compose down --remove-orphans || true
+
+      - name: Preparar imágenes para EC2
+        run: |
+          mkdir -p deploy-package
+          docker save \
+            "minibiblioteca-backend:$GITHUB_SHA" \
+            "minibiblioteca-frontend:$GITHUB_SHA" \
+            | gzip > deploy-package/minibiblioteca-images.tar.gz
+
+          cp docker-compose.yml deploy-package/docker-compose.yml
+          printf 'APP_VERSION=%s\nAPP_PORT=80\n' "$GITHUB_SHA" > deploy-package/.env
+
+      - name: Publicar paquete de despliegue
+        uses: actions/upload-artifact@v4
+        with:
+          name: minibiblioteca-deploy
+          path: deploy-package/
+          if-no-files-found: error
+
+  # ==========================================================
+  # CD - DESPLIEGUE LIVIANO EN EC2
+  # La EC2 NO compila Maven ni construye imágenes Docker.
+  # ==========================================================
+  deploy:
+    name: 5. Deploy AWS EC2
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Descargar paquete construido
+        uses: actions/download-artifact@v4
+        with:
+          name: minibiblioteca-deploy
+          path: deploy-package/
+
+      - name: Preparar clave SSH
+        shell: bash
+        env:
+          AWS_SSH_KEY: ${{ secrets.AWS_SSH_KEY }}
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AWS_SSH_KEY" | tr -d '\r' > ~/.ssh/minibiblioteca.pem
+          chmod 600 ~/.ssh/minibiblioteca.pem
+          ssh-keyscan -T 10 -H "$AWS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Verificar EC2 preparada
+        shell: bash
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          ssh \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            -i ~/.ssh/minibiblioteca.pem \
+            "$AWS_USER@$AWS_HOST" '
+              set -e
+              test -f /opt/minibiblioteca/.bootstrap-ready
+              sudo docker info >/dev/null
+              sudo docker compose version
+              free -h
+              df -h /
+            '
+
+      - name: Copiar imágenes y Compose a EC2
+        shell: bash
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          scp \
+            -i ~/.ssh/minibiblioteca.pem \
+            deploy-package/minibiblioteca-images.tar.gz \
+            deploy-package/docker-compose.yml \
+            deploy-package/.env \
+            "$AWS_USER@$AWS_HOST:/tmp/"
+
+      - name: Cargar imágenes y levantar stack
+        shell: bash
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          ssh \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            -i ~/.ssh/minibiblioteca.pem \
+            "$AWS_USER@$AWS_HOST" '
+              set -e
+              mkdir -p /opt/minibiblioteca/current
+
+              mv /tmp/docker-compose.yml /opt/minibiblioteca/current/docker-compose.yml
+              mv /tmp/.env /opt/minibiblioteca/current/.env
+
+              gzip -dc /tmp/minibiblioteca-images.tar.gz | sudo docker load
+              rm -f /tmp/minibiblioteca-images.tar.gz
+
+              cd /opt/minibiblioteca/current
+              sudo docker compose up -d --no-build --remove-orphans
+
+              echo "Estado del stack:"
+              sudo docker compose ps
+            '
+
+      - name: Verificar aplicación publicada
+        shell: bash
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
+        run: |
+          ssh \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            -i ~/.ssh/minibiblioteca.pem \
+            "$AWS_USER@$AWS_HOST" '
+              set -e
+              cd /opt/minibiblioteca/current
+
+              for i in {1..30}; do
+                if curl -fsS http://127.0.0.1/api/health >/dev/null 2>&1; then
+                  echo "MiniBiblioteca disponible."
+                  sudo docker compose ps
+                  sudo docker image prune -af
+                  exit 0
+                fi
+                echo "Esperando aplicación... intento $i/30"
+                sleep 5
+              done
+
+              echo "ERROR: la aplicación no respondió."
+              sudo docker compose ps
+              sudo docker compose logs --tail=120
+              exit 1
+            '

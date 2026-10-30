@@ -1,0 +1,47 @@
+# MiniBiblioteca DevSecOps - EC2 Free Tier
+
+Microproyecto académico reducido para practicar un flujo CI/CD completo sin exigir demasiados recursos a la instancia EC2.
+
+## Arquitectura
+
+- **frontend**: HTML/CSS/JavaScript servido por Nginx.
+- **backend**: Spring Boot 4.1.2 + Java 21.
+- **persistencia**: repositorio en memoria para evitar un tercer contenedor de base de datos.
+- **orquestación**: Docker Compose.
+- **CI/CD**: GitHub Actions.
+
+## Controles de CI
+
+1. Snyk: análisis SCA de dependencias Maven.
+2. JUnit + Mockito: pruebas unitarias.
+3. JaCoCo: reporte de cobertura.
+4. SonarQube Cloud: análisis estático y Quality Gate.
+5. Docker Compose: construcción y smoke test en el runner de GitHub.
+6. Deploy: GitHub copia imágenes Docker ya construidas a EC2 y ejecuta `docker compose up -d --no-build`.
+
+## Por qué este diseño es apto para una EC2 pequeña
+
+La EC2 **no ejecuta Maven ni construye imágenes**. GitHub Actions realiza el trabajo pesado y transfiere dos imágenes ya listas. En la EC2 solo se ejecutan Nginx y Spring Boot.
+
+## Puertos
+
+- Externo: `80/tcp` para la web.
+- Interno: backend `8080/tcp`, no se publica a Internet.
+
+## Comandos locales
+
+```bash
+APP_VERSION=local APP_PORT=8088 docker compose up -d --build
+curl http://127.0.0.1:8088/api/health
+curl http://127.0.0.1:8088/api/libros
+```
+
+## Preparación EC2
+
+Ejecute una sola vez:
+
+```bash
+bash deploy/prepare-ec2.sh
+```
+
+Luego configure los Secrets/Variables descritos en la guía Word.
