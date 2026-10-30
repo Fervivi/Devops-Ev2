@@ -2,7 +2,7 @@
 
 Evaluación Parcial N°2 - Ingeniería DevOps (DOY0101)
 
-Integrantes: Fernando Villalobos, _(compañero/a)_
+Integrantes: Fernando Villalobos, Tomás Peña
 
 Microproyecto académico para practicar un flujo CI/CD completo con GitHub Actions y despliegue en una instancia AWS EC2 pequeña.
 
@@ -99,12 +99,18 @@ bash deploy/prepare-ec2.sh
 
 ## Conclusiones
 
-_(completar por el equipo)_
+El proyecto MiniBiblioteca integra contenedores, pruebas automatizadas y análisis de seguridad en un mismo flujo de GitHub Actions. Las etapas están conectadas para detener el proceso cuando una validación falla, lo que permite detectar problemas antes de llegar al despliegue. Las 12 pruebas y la regla de cobertura mínima del 80% establecen una base verificable para controlar la calidad del backend.
+
+Docker Compose permite coordinar el frontend y el backend mediante una red compartida y un healthcheck. La construcción de imágenes en GitHub Actions reduce el trabajo que debe realizar la EC2, mientras que los límites de memoria y CPU mantienen el diseño cercano a los recursos de una instancia pequeña. El uso del SHA del commit como versión permite relacionar las imágenes con el código que las originó.
+
+La configuración del pipeline debe acompañarse de evidencia de su ejecución: análisis aprobados, pruebas exitosas y comprobación de la aplicación desplegada. El repositorio en memoria simplifica este laboratorio, pero los datos no persisten al reiniciar el backend. Estas condiciones delimitan el alcance académico de la solución y los aspectos que habría que revisar para un uso más amplio.
 
 ### Reflexión personal - Fernando Villalobos
 
-_(completar)_
+Al trabajar en MiniBiblioteca pude relacionar las pruebas, la seguridad y los contenedores con el proceso de entrega de una aplicación. La revisión del pipeline me ayudó a comprender la función de cada etapa y por qué un error debe impedir que continúen las siguientes. También pude distinguir entre una prueba que falla, una vulnerabilidad detectada y un problema de configuración, como la ausencia de un token.
 
-### Reflexión personal - _(compañero/a)_
+Mi participación se centró en revisar y ajustar el pipeline, incorporar pruebas y comprobar el funcionamiento local con Docker. Este trabajo me permitió comprender mejor cómo los reportes de cobertura y los logs sirven para revisar resultados y encontrar la causa de un fallo. Como aspecto por mejorar, considero necesario registrar las evidencias de cada validación y comprobar el recorrido completo hasta EC2, para respaldar con resultados lo que describe la documentación.
+
+### Reflexión personal - Tomás Peña
 
 _(completar)_
