@@ -2,7 +2,7 @@
 
 Evaluación Parcial N°2 - Ingeniería DevOps (DOY0101)
 
-Integrantes: Fernando Villalobos, _(compañero/a)_
+Integrantes: Fernando Villalobos, Tomás Peña
 
 Microproyecto académico para practicar un flujo CI/CD completo con GitHub Actions y despliegue en una instancia AWS EC2 pequeña.
 
@@ -105,6 +105,6 @@ _(completar por el equipo)_
 
 _(completar)_
 
-### Reflexión personal - _(compañero/a)_
+### Reflexión personal - Tomás Peña
 
 _(completar)_
