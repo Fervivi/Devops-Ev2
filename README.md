@@ -97,13 +97,9 @@ Ejecutar una sola vez dentro de la EC2:
 bash deploy/prepare-ec2.sh
 ```
 
-## Uso de IA
-
-Se utilizó Claude (Anthropic) como apoyo para revisar el proyecto base contra la pauta, corregir el pipeline, agregar pruebas y redactar parte de esta documentación. Todo el contenido fue revisado y probado por el equipo. Las conclusiones y reflexiones fueron escritas sin apoyo de IA.
-
 ## Conclusiones
 
-_(completar por el equipo, sin IA)_
+_(completar por el equipo)_
 
 ### Reflexión personal - Fernando Villalobos
 
