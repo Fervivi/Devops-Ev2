@@ -1,0 +1,6 @@
+# Los scripts se ejecutan en Linux (EC2 / runners): siempre con fin de línea LF.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+*.conf text eol=lf
