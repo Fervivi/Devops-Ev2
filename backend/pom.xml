@@ -19,7 +19,10 @@
 
     <properties>
         <java.version>21</java.version>
-        <jacoco.version>0.8.13</jacoco.version>
+        <jacoco.version>0.8.16</jacoco.version>
+        <!-- Política de calidad: cobertura mínima exigida por el pipeline. -->
+        <jacoco.minimo.lineas>0.80</jacoco.minimo.lineas>
+        <jacoco.minimo.ramas>0.70</jacoco.minimo.ramas>
     </properties>
 
     <dependencies>
@@ -59,6 +62,33 @@
                         <goals>
                             <goal>report</goal>
                         </goals>
+                    </execution>
+                    <!-- Si la cobertura baja del mínimo, mvn verify falla y el pipeline se detiene. -->
+                    <execution>
+                        <id>jacoco-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.minimo.lineas}</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.minimo.ramas}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
