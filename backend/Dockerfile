@@ -2,7 +2,7 @@
 # ETAPA 1 - BUILD
 # Maven compila el JAR. Esta etapa NO queda en la imagen final.
 # ============================================================
-FROM maven:3.10-eclipse-temurin-21-alpine AS build
+FROM maven:3-eclipse-temurin-27-alpine AS build
 WORKDIR /build
 
 # Copiamos primero el POM para aprovechar la caché de Docker.
