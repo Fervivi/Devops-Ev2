@@ -5,13 +5,16 @@ on:
     branches: [ main ]
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Un grupo por rama: los PR (Dependabot incluido) ya no cancelan el pipeline de main.
+# En main los runs se encolan en vez de cancelarse, para no cortar un deploy a medias.
 concurrency:
-  group: minibiblioteca-production
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ==========================================================
@@ -23,15 +26,20 @@ jobs:
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
           cache-dependency-path: backend/pom.xml
+
+      - name: Validar SNYK_TOKEN
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: test -n "$SNYK_TOKEN" || { echo "::error::Falta el secret SNYK_TOKEN"; exit 1; }
 
       - name: Instalar Snyk CLI
         run: npm install -g snyk
@@ -72,7 +80,7 @@ jobs:
 
       - name: Publicar reporte Snyk
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: snyk-report
           path: snyk-report.json
@@ -94,25 +102,57 @@ jobs:
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
           cache-dependency-path: backend/pom.xml
 
+      # verify ejecuta JUnit/Mockito, genera JaCoCo y aplica la cobertura mínima del pom.xml.
       - name: Ejecutar pruebas y generar cobertura
         run: mvn -B -f backend/pom.xml clean verify
 
+      - name: Resumen de pruebas y cobertura
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Pruebas unitarias y cobertura"
+            echo ""
+            echo "| Suite | Tests | Fallos | Errores |"
+            echo "|---|---|---|---|"
+            for f in backend/target/surefire-reports/TEST-*.xml; do
+              [ -f "$f" ] || continue
+              suite=$(grep -o 'testsuite [^>]*name="[^"]*"' "$f" | sed 's/.*name="\([^"]*\)"/\1/' | head -1)
+              tests=$(grep -o 'tests="[0-9]*"' "$f" | head -1 | tr -dc '0-9')
+              fails=$(grep -o 'failures="[0-9]*"' "$f" | head -1 | tr -dc '0-9')
+              errs=$(grep -o 'errors="[0-9]*"' "$f" | head -1 | tr -dc '0-9')
+              echo "| ${suite##*.} | $tests | $fails | $errs |"
+            done
+            if [ -f backend/target/site/jacoco/jacoco.csv ]; then
+              awk -F, 'NR>1 {m+=$8; c+=$9} END {if (m+c>0) printf "\n**Cobertura de líneas:** %.1f%% (mínimo exigido: 80%%)\n", 100*c/(m+c)}' \
+                backend/target/site/jacoco/jacoco.csv
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publicar reporte JaCoCo
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jacoco-backend
           path: backend/target/site/jacoco/
           if-no-files-found: error
+
+      - name: Publicar resultados JUnit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-backend
+          path: backend/target/surefire-reports/
+          if-no-files-found: warn
 
   # ==========================================================
   # CI 2 - SONARQUBE CLOUD / QUALITY GATE
@@ -124,12 +164,12 @@ jobs:
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Configurar Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -137,7 +177,7 @@ jobs:
           cache-dependency-path: backend/pom.xml
 
       - name: Descargar reporte JaCoCo
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: jacoco-backend
           path: backend/target/site/jacoco/
@@ -181,19 +221,71 @@ jobs:
     name: 4. Docker Compose y Smoke Test
     needs: sonarcloud
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # publicar imágenes versionadas en GitHub Container Registry
+
+    env:
+      # Cada imagen queda etiquetada con el SHA del commit: trazabilidad commit -> imagen -> deploy.
+      APP_VERSION: ${{ github.sha }}
+      VCS_REF: ${{ github.sha }}
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validar Docker Compose
-        run: APP_VERSION="$GITHUB_SHA" APP_PORT=18080 docker compose config
+        run: APP_PORT=18080 docker compose config
 
       - name: Construir imágenes en GitHub Actions
-        run: APP_VERSION="$GITHUB_SHA" docker compose build
+        run: docker compose build
+
+      # Segundo control de seguridad: vulnerabilidades del sistema operativo de las imágenes.
+      # Las dependencias Java ya se revisaron en el job 1, por eso se usa --exclude-app-vulns.
+      - name: Instalar Snyk CLI
+        run: npm install -g snyk
+
+      - name: Escanear imágenes con Snyk Container
+        id: snyk_container
+        shell: bash
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set +e
+          RESULTADO=0
+          for servicio in backend frontend; do
+            snyk container test "minibiblioteca-$servicio:$APP_VERSION" \
+              --file="$servicio/Dockerfile" \
+              --exclude-app-vulns \
+              --severity-threshold=critical \
+              --json-file-output="snyk-container-$servicio.json"
+            CODIGO=$?
+            echo "Snyk Container $servicio: código $CODIGO"
+            if [ "$CODIGO" -ge 2 ]; then
+              echo "::error::Snyk Container falló técnicamente en $servicio ($CODIGO)"
+              exit "$CODIGO"
+            fi
+            [ "$CODIGO" -eq 1 ] && RESULTADO=1
+          done
+          echo "exit_code=$RESULTADO" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publicar reporte Snyk Container
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: snyk-container-report
+          path: snyk-container-*.json
+          if-no-files-found: warn
+
+      - name: Aplicar Security Gate de imágenes
+        if: steps.snyk_container.outputs.exit_code == '1'
+        run: |
+          echo "::error::SECURITY GATE BLOQUEADO: vulnerabilidad Critical en una imagen."
+          exit 1
 
       - name: Levantar stack temporal
-        run: APP_VERSION="$GITHUB_SHA" APP_PORT=18080 docker compose up -d --no-build
+        run: APP_PORT=18080 docker compose up -d --no-build
 
       - name: Esperar y probar aplicación
         shell: bash
@@ -201,6 +293,10 @@ jobs:
           for i in {1..30}; do
             if curl -fsS http://127.0.0.1:18080/api/health >/dev/null 2>&1; then
               curl -fsS http://127.0.0.1:18080/api/libros
+              echo ""
+              # El frontend sirve la página y el proxy devuelve 404 para un libro inexistente.
+              curl -fsS http://127.0.0.1:18080/ | grep -q "MiniBiblioteca"
+              test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/api/libros/999)" = "404"
               echo "Smoke test correcto."
               exit 0
             fi
@@ -218,21 +314,55 @@ jobs:
 
       - name: Detener stack temporal
         if: always()
-        run: APP_VERSION="$GITHUB_SHA" APP_PORT=18080 docker compose down --remove-orphans || true
+        run: APP_PORT=18080 docker compose down --remove-orphans || true
+
+      # Registro de versiones: solo en main se publican las imágenes en GHCR (sha + latest).
+      - name: Publicar imágenes en GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          REGISTRO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          for servicio in backend frontend; do
+            for etiqueta in "$APP_VERSION" latest; do
+              docker tag "minibiblioteca-$servicio:$APP_VERSION" "$REGISTRO/minibiblioteca-$servicio:$etiqueta"
+              docker push "$REGISTRO/minibiblioteca-$servicio:$etiqueta"
+            done
+          done
+
+      - name: Resumen de trazabilidad
+        shell: bash
+        run: |
+          {
+            echo "## Imágenes construidas"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| Commit | \`$GITHUB_SHA\` |"
+            echo "| Rama / evento | \`$GITHUB_REF_NAME\` / \`$GITHUB_EVENT_NAME\` |"
+            echo "| Autor | @$GITHUB_ACTOR |"
+            for servicio in backend frontend; do
+              tam=$(docker image inspect "minibiblioteca-$servicio:$APP_VERSION" --format '{{.Size}}' | awk '{printf "%.0f MB", $1/1000000}')
+              echo "| Imagen $servicio | \`minibiblioteca-$servicio:$APP_VERSION\` ($tam) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preparar imágenes para EC2
         run: |
           mkdir -p deploy-package
           docker save \
-            "minibiblioteca-backend:$GITHUB_SHA" \
-            "minibiblioteca-frontend:$GITHUB_SHA" \
+            "minibiblioteca-backend:$APP_VERSION" \
+            "minibiblioteca-frontend:$APP_VERSION" \
             | gzip > deploy-package/minibiblioteca-images.tar.gz
 
           cp docker-compose.yml deploy-package/docker-compose.yml
-          printf 'APP_VERSION=%s\nAPP_PORT=80\n' "$GITHUB_SHA" > deploy-package/.env
+          cp deploy/deploy-remote.sh deploy-package/deploy-remote.sh
+          printf 'APP_VERSION=%s\nVCS_REF=%s\nAPP_PORT=80\nBACKEND_REPLICAS=1\n' "$APP_VERSION" "$VCS_REF" > deploy-package/.env
 
       - name: Publicar paquete de despliegue
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: minibiblioteca-deploy
           path: deploy-package/
@@ -248,10 +378,14 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Environment de GitHub: deja historial de cada despliegue en la pestaña "Deployments".
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
 
     steps:
       - name: Descargar paquete construido
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: minibiblioteca-deploy
           path: deploy-package/
@@ -261,7 +395,11 @@ jobs:
         env:
           AWS_SSH_KEY: ${{ secrets.AWS_SSH_KEY }}
           AWS_HOST: ${{ secrets.AWS_HOST }}
+          AWS_USER: ${{ secrets.AWS_USER }}
         run: |
+          for v in AWS_SSH_KEY AWS_HOST AWS_USER; do
+            test -n "${!v}" || { echo "::error::Falta el secret $v"; exit 1; }
+          done
           mkdir -p ~/.ssh
           printf '%s\n' "$AWS_SSH_KEY" | tr -d '\r' > ~/.ssh/minibiblioteca.pem
           chmod 600 ~/.ssh/minibiblioteca.pem
@@ -286,73 +424,71 @@ jobs:
               df -h /
             '
 
-      - name: Copiar imágenes y Compose a EC2
+      - name: Copiar paquete a EC2
         shell: bash
         env:
           AWS_HOST: ${{ secrets.AWS_HOST }}
           AWS_USER: ${{ secrets.AWS_USER }}
         run: |
+          ssh -i ~/.ssh/minibiblioteca.pem "$AWS_USER@$AWS_HOST" \
+            "rm -rf /tmp/minibiblioteca-deploy && mkdir -p /tmp/minibiblioteca-deploy"
           scp \
             -i ~/.ssh/minibiblioteca.pem \
             deploy-package/minibiblioteca-images.tar.gz \
             deploy-package/docker-compose.yml \
             deploy-package/.env \
-            "$AWS_USER@$AWS_HOST:/tmp/"
+            deploy-package/deploy-remote.sh \
+            "$AWS_USER@$AWS_HOST:/tmp/minibiblioteca-deploy/"
 
-      - name: Cargar imágenes y levantar stack
+      # deploy-remote.sh carga las imágenes, levanta Compose, verifica /api/health,
+      # registra el despliegue en /opt/minibiblioteca/logs/deployments.log
+      # y hace rollback automático a la versión anterior si la nueva no responde.
+      - name: Desplegar con rollback automático
         shell: bash
         env:
           AWS_HOST: ${{ secrets.AWS_HOST }}
           AWS_USER: ${{ secrets.AWS_USER }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           ssh \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=20 \
             -i ~/.ssh/minibiblioteca.pem \
-            "$AWS_USER@$AWS_HOST" '
-              set -e
-              mkdir -p /opt/minibiblioteca/current
+            "$AWS_USER@$AWS_HOST" \
+            "bash /tmp/minibiblioteca-deploy/deploy-remote.sh /tmp/minibiblioteca-deploy '$GITHUB_ACTOR' '$RUN_URL'"
 
-              mv /tmp/docker-compose.yml /opt/minibiblioteca/current/docker-compose.yml
-              mv /tmp/.env /opt/minibiblioteca/current/.env
+      - name: Verificar aplicación desde Internet
+        shell: bash
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+        run: |
+          # Confirma que el puerto 80 del Security Group está abierto y la web responde.
+          for i in {1..10}; do
+            if curl -fsS "http://$AWS_HOST/api/health"; then
+              echo ""
+              echo "MiniBiblioteca disponible desde Internet."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::La aplicación responde en la EC2 pero no desde Internet. Revisar puerto 80 del Security Group."
+          exit 1
 
-              gzip -dc /tmp/minibiblioteca-images.tar.gz | sudo docker load
-              rm -f /tmp/minibiblioteca-images.tar.gz
-
-              cd /opt/minibiblioteca/current
-              sudo docker compose up -d --no-build --remove-orphans
-
-              echo "Estado del stack:"
-              sudo docker compose ps
-            '
-
-      - name: Verificar aplicación publicada
+      - name: Resumen del despliegue
+        if: always()
         shell: bash
         env:
           AWS_HOST: ${{ secrets.AWS_HOST }}
           AWS_USER: ${{ secrets.AWS_USER }}
         run: |
-          ssh \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=20 \
-            -i ~/.ssh/minibiblioteca.pem \
-            "$AWS_USER@$AWS_HOST" '
-              set -e
-              cd /opt/minibiblioteca/current
-
-              for i in {1..30}; do
-                if curl -fsS http://127.0.0.1/api/health >/dev/null 2>&1; then
-                  echo "MiniBiblioteca disponible."
-                  sudo docker compose ps
-                  sudo docker image prune -af
-                  exit 0
-                fi
-                echo "Esperando aplicación... intento $i/30"
-                sleep 5
-              done
-
-              echo "ERROR: la aplicación no respondió."
-              sudo docker compose ps
-              sudo docker compose logs --tail=120
-              exit 1
-            '
+          {
+            echo "## Despliegue en AWS EC2 (${{ job.status }})"
+            echo ""
+            echo "Versión desplegada: \`$GITHUB_SHA\`"
+            echo ""
+            echo "Últimos despliegues registrados en la EC2:"
+            echo '```'
+            ssh -i ~/.ssh/minibiblioteca.pem "$AWS_USER@$AWS_HOST" \
+              "tail -n 5 /opt/minibiblioteca/logs/deployments.log" 2>/dev/null || echo "(sin registro)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
