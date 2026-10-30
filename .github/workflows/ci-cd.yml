@@ -369,12 +369,128 @@ jobs:
           if-no-files-found: error
 
   # ==========================================================
+  # CI 4 - ORQUESTACIÓN EN KUBERNETES (clúster kind efímero)
+  # Valida los manifiestos de k8s/ con las mismas imágenes del commit:
+  # réplicas, probes, Pod Security "restricted", rolling update y autorreparación.
+  # ==========================================================
+  kubernetes:
+    name: 5. Kubernetes (kind)
+    needs: docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      APP_VERSION: ${{ github.sha }}
+      KIND_VERSION: v0.29.0
+      NS: minibiblioteca
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v7
+
+      - name: Descargar imágenes construidas
+        uses: actions/download-artifact@v8
+        with:
+          name: minibiblioteca-deploy
+          path: deploy-package/
+
+      - name: Cargar imágenes en Docker
+        run: gzip -dc deploy-package/minibiblioteca-images.tar.gz | docker load
+
+      - name: Instalar kind
+        shell: bash
+        run: |
+          if ! command -v kind >/dev/null; then
+            curl -fsSLo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+            chmod +x kind
+            sudo mv kind /usr/local/bin/kind
+          fi
+          kind version
+          kubectl version --client
+
+      - name: Crear clúster Kubernetes
+        run: kind create cluster --name minibiblioteca --wait 120s
+
+      - name: Cargar imágenes en el clúster
+        run: |
+          kind load docker-image --name minibiblioteca \
+            "minibiblioteca-backend:$APP_VERSION" \
+            "minibiblioteca-frontend:$APP_VERSION"
+
+      - name: Desplegar manifiestos con la versión del commit
+        shell: bash
+        run: |
+          # Kustomize reemplaza la etiqueta "local" por el SHA del commit.
+          cat >> k8s/kustomization.yaml <<EOF
+          images:
+            - name: minibiblioteca-backend
+              newTag: "$APP_VERSION"
+            - name: minibiblioteca-frontend
+              newTag: "$APP_VERSION"
+          EOF
+          kubectl apply -k k8s/
+          kubectl -n "$NS" rollout status deployment/backend --timeout=240s
+          kubectl -n "$NS" rollout status deployment/frontend --timeout=120s
+
+      - name: Probar la aplicación dentro del clúster
+        shell: bash
+        run: |
+          kubectl -n "$NS" port-forward service/frontend 18081:80 >/tmp/port-forward.log 2>&1 &
+          for i in {1..20}; do
+            if curl -fsS http://127.0.0.1:18081/api/health >/dev/null 2>&1; then
+              curl -fsS http://127.0.0.1:18081/api/libros
+              echo ""
+              echo "Aplicación respondiendo en Kubernetes."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::La aplicación no respondió dentro del clúster."
+          exit 1
+
+      - name: Probar autorreparación (se elimina un pod del backend)
+        shell: bash
+        run: |
+          POD=$(kubectl -n "$NS" get pods -l app=backend -o jsonpath='{.items[0].metadata.name}')
+          echo "Eliminando $POD..."
+          kubectl -n "$NS" delete pod "$POD" --wait=false
+          for i in {1..40}; do
+            LISTOS=$(kubectl -n "$NS" get deployment backend -o jsonpath='{.status.readyReplicas}')
+            if [ "${LISTOS:-0}" -ge 2 ] && ! kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
+              echo "Kubernetes recreó el pod: $LISTOS réplicas listas."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::El Deployment no recuperó sus réplicas."
+          exit 1
+
+      - name: Resumen del clúster
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Orquestación en Kubernetes (kind)"
+            echo '```'
+            kubectl -n "$NS" get deployments,pods,services,hpa,pdb -o wide 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnóstico si falla
+        if: failure()
+        run: |
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -40 || true
+          kubectl -n "$NS" describe pods | tail -80 || true
+          kubectl -n "$NS" logs -l app=backend --tail=60 || true
+          kubectl -n "$NS" logs -l app=frontend --tail=30 || true
+
+  # ==========================================================
   # CD - DESPLIEGUE LIVIANO EN EC2
   # La EC2 NO compila Maven ni construye imágenes Docker.
   # ==========================================================
   deploy:
-    name: 5. Deploy AWS EC2
-    needs: docker
+    name: 6. Deploy AWS EC2
+    needs: [docker, kubernetes]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -492,3 +608,42 @@ jobs:
               "tail -n 5 /opt/minibiblioteca/logs/deployments.log" 2>/dev/null || echo "(sin registro)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ==========================================================
+  # ALERTA - si cualquier etapa falla en main, se abre un issue
+  # (GitHub notifica por correo a los responsables del repositorio).
+  # En los Pull Request el bloqueo lo dan los checks en rojo.
+  # ==========================================================
+  alerta:
+    name: Alerta de fallo
+    needs: [seguridad_snyk, pruebas, sonarcloud, docker, kubernetes, deploy]
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Crear issue con el detalle del fallo
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULTADOS: |
+            | Etapa | Resultado |
+            |---|---|
+            | 1. Snyk - Dependencias | ${{ needs.seguridad_snyk.result }} |
+            | 2. JUnit Mockito y JaCoCo | ${{ needs.pruebas.result }} |
+            | 3. SonarQube Cloud | ${{ needs.sonarcloud.result }} |
+            | 4. Docker Compose, Snyk Container y Smoke Test | ${{ needs.docker.result }} |
+            | 5. Kubernetes (kind) | ${{ needs.kubernetes.result }} |
+            | 6. Deploy AWS EC2 | ${{ needs.deploy.result }} |
+        run: |
+          CUERPO=$(printf '%s\n\n%s\n\n%s\n%s\n' \
+            "El pipeline falló en \`$GITHUB_REF_NAME\` (commit \`$GITHUB_SHA\`, autor @$GITHUB_ACTOR)." \
+            "$RESULTADOS" \
+            "Detalle y reportes (Snyk, JaCoCo, JUnit): $RUN_URL" \
+            "Revisar la etapa en rojo, corregir y volver a ejecutar. Cerrar este issue cuando el pipeline vuelva a verde.")
+          gh issue create \
+            --title "Pipeline fallido en $GITHUB_REF_NAME (${GITHUB_SHA::7})" \
+            --body "$CUERPO"
