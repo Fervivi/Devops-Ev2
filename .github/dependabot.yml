@@ -15,6 +15,11 @@ updates:
     directory: "/backend"
     schedule:
       interval: "weekly"
+    # El proyecto usa Java 21: no proponer imágenes con otra versión de Java.
+    ignore:
+      - dependency-name: "eclipse-temurin"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "maven"
 
   - package-ecosystem: "docker"
     directory: "/frontend"

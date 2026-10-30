@@ -19,7 +19,9 @@
 
     <properties>
         <java.version>21</java.version>
-        <jacoco.version>0.8.13</jacoco.version>
+        <jacoco.version>0.8.16</jacoco.version>
+        <!-- Snyk: jackson-databind 3.1.7 tiene una vulnerabilidad Critical (SNYK-JAVA-TOOLSJACKSONCORE-21761838). -->
+        <jackson-bom.version>3.1.8</jackson-bom.version>
     </properties>
 
     <dependencies>
@@ -59,6 +61,28 @@
                         <goals>
                             <goal>report</goal>
                         </goals>
+                    </execution>
+                    <!-- Si la cobertura de líneas baja del 80%, mvn verify falla. -->
+                    <execution>
+                        <id>jacoco-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
