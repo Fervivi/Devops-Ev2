@@ -1,16 +1,39 @@
 name: minibiblioteca
 
+# Opciones comunes de seguridad y logs, reutilizadas por ambos servicios.
+x-seguridad: &seguridad
+  restart: unless-stopped
+  # Sistema de archivos de solo lectura: solo /tmp es escribible (en memoria).
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      # Evita que los logs llenen el disco pequeño de la EC2.
+      max-size: "10m"
+      max-file: "3"
+
 services:
   backend:
+    <<: *seguridad
     image: minibiblioteca-backend:${APP_VERSION:-local}
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: minibiblioteca-backend
-    restart: unless-stopped
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+        VCS_REF: ${VCS_REF:-local}
+    # Sin container_name para poder escalar: BACKEND_REPLICAS=2 docker compose up -d
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-1}
     environment:
       JAVA_TOOL_OPTIONS: >-
         -Xms64m -Xmx256m -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC
+    tmpfs:
+      - /tmp:size=64m
     expose:
       - "8080"
     healthcheck:
@@ -19,25 +42,40 @@ services:
       timeout: 4s
       retries: 12
       start_period: 20s
+    # Spring usa apagado graceful (server.shutdown=graceful).
+    stop_grace_period: 15s
     mem_limit: 480m
     cpus: 0.60
+    pids_limit: 200
     networks:
       - minibiblioteca-net
 
   frontend:
+    <<: *seguridad
     image: minibiblioteca-frontend:${APP_VERSION:-local}
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: minibiblioteca-frontend
-    restart: unless-stopped
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+        VCS_REF: ${VCS_REF:-local}
+    tmpfs:
+      - /tmp:size=16m
+    # Nginx corre sin root en 8080; el host publica APP_PORT (80 en EC2).
     ports:
-      - "${APP_PORT:-80}:80"
+      - "${APP_PORT:-80}:8080"
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     mem_limit: 96m
     cpus: 0.20
+    pids_limit: 100
     networks:
       - minibiblioteca-net
 
