@@ -20,6 +20,8 @@
     <properties>
         <java.version>21</java.version>
         <jacoco.version>0.8.16</jacoco.version>
+        <!-- Snyk: jackson-databind 3.1.7 tiene una vulnerabilidad Critical (SNYK-JAVA-TOOLSJACKSONCORE-21761838). -->
+        <jackson-bom.version>3.1.8</jackson-bom.version>
     </properties>
 
     <dependencies>
