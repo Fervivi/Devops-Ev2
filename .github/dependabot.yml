@@ -1,43 +1,27 @@
 version: 2
 
-# Dependabot revisa dependencias cada semana y abre un Pull Request hacia main.
-# Cada PR pasa por el mismo pipeline (Snyk, pruebas, Sonar, Docker) antes de poder fusionarse.
 updates:
   - package-ecosystem: "maven"
     directory: "/backend"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "build(deps)"
 
-  # Las actions se agrupan en un solo PR para no saturar el pipeline.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-    groups:
-      github-actions:
-        patterns: ["*"]
-    commit-message:
-      prefix: "ci(deps)"
 
-  # El proyecto apunta a Java 21 (LTS). Se ignoran saltos mayores de imagen
-  # (por ejemplo temurin 24/27) porque cambian la versión de Java.
   - package-ecosystem: "docker"
     directory: "/backend"
     schedule:
       interval: "weekly"
+    # El proyecto usa Java 21: no proponer imágenes con otra versión de Java.
     ignore:
       - dependency-name: "eclipse-temurin"
         update-types: ["version-update:semver-major"]
       - dependency-name: "maven"
-    commit-message:
-      prefix: "build(docker)"
 
   - package-ecosystem: "docker"
     directory: "/frontend"
     schedule:
       interval: "weekly"
-    commit-message:
-      prefix: "build(docker)"
