@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar Java 21
         uses: actions/setup-java@v4
@@ -94,7 +94,7 @@ jobs:
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar Java 21
         uses: actions/setup-java@v4
@@ -124,7 +124,7 @@ jobs:
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -184,7 +184,7 @@ jobs:
 
     steps:
       - name: Descargar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validar Docker Compose
         run: APP_VERSION="$GITHUB_SHA" APP_PORT=18080 docker compose config
