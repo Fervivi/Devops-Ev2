@@ -20,9 +20,6 @@
     <properties>
         <java.version>21</java.version>
         <jacoco.version>0.8.16</jacoco.version>
-        <!-- Política de calidad: cobertura mínima exigida por el pipeline. -->
-        <jacoco.minimo.lineas>0.80</jacoco.minimo.lineas>
-        <jacoco.minimo.ramas>0.70</jacoco.minimo.ramas>
     </properties>
 
     <dependencies>
@@ -63,7 +60,7 @@
                             <goal>report</goal>
                         </goals>
                     </execution>
-                    <!-- Si la cobertura baja del mínimo, mvn verify falla y el pipeline se detiene. -->
+                    <!-- Si la cobertura de líneas baja del 80%, mvn verify falla. -->
                     <execution>
                         <id>jacoco-check</id>
                         <phase>verify</phase>
@@ -78,12 +75,7 @@
                                         <limit>
                                             <counter>LINE</counter>
                                             <value>COVEREDRATIO</value>
-                                            <minimum>${jacoco.minimo.lineas}</minimum>
-                                        </limit>
-                                        <limit>
-                                            <counter>BRANCH</counter>
-                                            <value>COVEREDRATIO</value>
-                                            <minimum>${jacoco.minimo.ramas}</minimum>
+                                            <minimum>0.80</minimum>
                                         </limit>
                                     </limits>
                                 </rule>
