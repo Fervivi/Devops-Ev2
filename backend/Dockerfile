@@ -17,7 +17,7 @@ RUN mvn -B -DskipTests clean package
 # ETAPA 2 - RUNTIME
 # Solo contiene Java Runtime + aplicación terminada.
 # ============================================================
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:24-jre-alpine
 
 # curl se utiliza en el healthcheck de Docker Compose.
 RUN apk add --no-cache curl \
