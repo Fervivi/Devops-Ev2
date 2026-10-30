@@ -5,6 +5,15 @@ const disponibles = document.getElementById('disponibles');
 const estado = document.getElementById('estado');
 const recargar = document.getElementById('recargar');
 
+function crearElemento(etiqueta, texto, clase) {
+    const elemento = document.createElement(etiqueta);
+    elemento.textContent = texto;
+    if (clase) {
+        elemento.className = clase;
+    }
+    return elemento;
+}
+
 async function cargar() {
     mensaje.textContent = 'Consultando backend...';
     contenedor.innerHTML = '';
@@ -29,15 +38,15 @@ async function cargar() {
         estado.textContent = health.status;
         mensaje.textContent = 'API REST conectada correctamente.';
 
+        // Se usa textContent (no innerHTML) para que los datos de la API no se interpreten como HTML (XSS).
         libros.forEach(libro => {
             const card = document.createElement('article');
             card.className = 'card';
-            card.innerHTML = `
-                <h3>${libro.titulo}</h3>
-                <p>${libro.autor}</p>
-                <p class="${libro.disponible ? 'ok' : 'no'}">
-                    ${libro.disponible ? 'Disponible' : 'Prestado'}
-                </p>`;
+            card.append(
+                crearElemento('h3', libro.titulo),
+                crearElemento('p', libro.autor),
+                crearElemento('p', libro.disponible ? 'Disponible' : 'Prestado', libro.disponible ? 'ok' : 'no')
+            );
             contenedor.appendChild(card);
         });
     } catch (error) {
