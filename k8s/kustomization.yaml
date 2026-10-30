@@ -1,0 +1,19 @@
+# Estrategia de orquestación escalable (alternativa a Docker Compose para clústeres).
+# Se valida en el pipeline levantando un clúster kind efímero.
+#   kubectl apply -k k8s/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: minibiblioteca
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: minibiblioteca
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - backend.yaml
+  - frontend.yaml
+  - backend-hpa.yaml
+  - pdb.yaml
