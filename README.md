@@ -113,4 +113,6 @@ Mi participación se centró en revisar y ajustar el pipeline, incorporar prueba
 
 ### Reflexión personal - Tomás Peña
 
-_(completar)_
+Durante el proyecto MiniBiblioteca pude reforzar mis conocimientos sobre Docker y GitHub Actions, principalmente en la organización de los contenedores y la automatización del pipeline CI/CD. Al revisar la estructura y configuración de la aplicación, pude comprender mejor cómo se comunican el frontend y el backend, además de la importancia de realizar pruebas y validaciones antes de desplegar los cambios.
+
+También pude analizar el funcionamiento de herramientas como Snyk, SonarQube y JaCoCo, comprendiendo cómo ayudan a detectar vulnerabilidades y evaluar la calidad del código. Esta experiencia me permitió entender mejor la relación entre las pruebas automatizadas, la seguridad y el despliegue en AWS EC2.
